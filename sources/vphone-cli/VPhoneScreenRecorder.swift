@@ -13,6 +13,7 @@ class VPhoneScreenRecorder {
         case captureFailed
         case clipboardWriteFailed
         case encodingFailed
+        case writerStartFailed(String)
 
         var errorDescription: String? {
             switch self {
@@ -22,6 +23,8 @@ class VPhoneScreenRecorder {
                 "Failed to copy the screenshot to the pasteboard."
             case .encodingFailed:
                 "Failed to encode the screenshot as PNG."
+            case let .writerStartFailed(reason):
+                "Failed to start video writer: \(reason)"
             }
         }
     }
@@ -44,6 +47,9 @@ class VPhoneScreenRecorder {
     private var captureModeDescription = "private VZGraphicsDisplay screenshots"
     private var screenshotInFlight = false
     private var didLogCaptureFailure = false
+    private var captureAttemptCount = 0
+    private var capturedFrameCount: Int64 = 0
+    private var stopInProgress = false
 
     var isRecording: Bool {
         writer?.status == .writing
@@ -81,7 +87,9 @@ class VPhoneScreenRecorder {
         )
 
         writer.add(input)
-        writer.startWriting()
+        guard writer.startWriting(), writer.status == .writing else {
+            throw CaptureError.writerStartFailed(writer.error?.localizedDescription ?? "unknown writer error")
+        }
         writer.startSession(atSourceTime: .zero)
 
         self.writer = writer
@@ -92,6 +100,9 @@ class VPhoneScreenRecorder {
         frameCount = 0
         screenshotInFlight = false
         didLogCaptureFailure = false
+        captureAttemptCount = 0
+        capturedFrameCount = 0
+        stopInProgress = false
 
         timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) {
             [weak self] _ in
@@ -106,7 +117,8 @@ class VPhoneScreenRecorder {
     }
 
     func stopRecording() async -> URL? {
-        guard let writer, writer.status == .writing else { return nil }
+        guard !stopInProgress, let writer, writer.status == .writing else { return nil }
+        stopInProgress = true
 
         timer?.invalidate()
         timer = nil
@@ -124,7 +136,7 @@ class VPhoneScreenRecorder {
         didLogCaptureFailure = false
 
         if let url {
-            print("[record] saved - \(url.path)")
+            print("[record] saved - \(url.path) (frames: \(capturedFrameCount), status: \(writer.status.rawValue))")
         }
         return url
     }
@@ -178,6 +190,7 @@ class VPhoneScreenRecorder {
               let graphicsDisplay
         else { return }
 
+        captureAttemptCount += 1
         captureGraphicsDisplayFrame(graphicsDisplay, adaptor: adaptor)
     }
 
@@ -197,8 +210,8 @@ class VPhoneScreenRecorder {
                 guard let input = self.videoInput, input.isReadyForMoreMediaData else { return }
 
                 guard let cgImage else {
-                    if !self.didLogCaptureFailure {
-                        print("[record] graphics screenshot returned no image")
+                    if !self.didLogCaptureFailure || self.captureAttemptCount % 30 == 0 {
+                        print("[record] graphics screenshot returned no image (attempt: \(self.captureAttemptCount)); retrying")
                         self.didLogCaptureFailure = true
                     }
                     return
@@ -244,8 +257,14 @@ class VPhoneScreenRecorder {
         CVPixelBufferUnlockBaseAddress(pb, [])
 
         let time = CMTime(value: frameCount, timescale: 30)
-        adaptor.append(pb, withPresentationTime: time)
+        guard adaptor.append(pb, withPresentationTime: time) else {
+            let status = writer?.status.rawValue ?? -1
+            let error = writer?.error?.localizedDescription ?? "none"
+            print("[record] frame append failed (writer status: \(status), error: \(error))")
+            return
+        }
         frameCount += 1
+        capturedFrameCount += 1
     }
 
     private func resolveCaptureSource(for view: NSView) throws -> CaptureSource {
