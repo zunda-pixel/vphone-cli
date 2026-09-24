@@ -17,12 +17,30 @@ PROJECT_ROOT="${SCRIPT_DIR:h}"
 cd "$PROJECT_ROOT"
 
 BINARY=".build/release/vphone-cli"
-BUNDLE=".build/vphone-cli.app"
+FINAL_BUNDLE=".build/vphone-cli.app"
+BUNDLE=".build/.vphone-cli.app.staging.$$"
 BUNDLE_BIN="${BUNDLE}/Contents/MacOS/vphone-cli"
 INFO_PLIST="sources/Info.plist"
 ENTITLEMENTS="sources/vphone.entitlements"
 BUILD_INFO="sources/vphone-cli/VPhoneBuildInfo.swift"
 GIT_HASH="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+
+# Do this before creating any bundle output. A failed resource check used to
+# leave a partially populated .app behind, which was easy to install and then
+# failed later because Contents/Resources/scripts was absent.
+command -v ldid >/dev/null 2>&1 \
+  || { echo "Error: ldid not found. Run: brew install ldid-procursus" >&2; exit 1; }
+for required_tool in .tools/bin/trustcache .tools/bin/insert_dylib; do
+  [[ -x "$required_tool" ]] \
+    || { echo "Error: $required_tool missing — run ./scripts/setup_tools.sh first" >&2; exit 1; }
+done
+[[ -x scripts/boot_host_preflight.sh ]] \
+  || { echo "Error: scripts/boot_host_preflight.sh missing" >&2; exit 1; }
+
+cleanup_staging() {
+  rm -rf -- "$BUNDLE"
+}
+trap cleanup_staging ERR
 
 BUILD_VPHONED=1
 for arg in "$@"; do
@@ -113,10 +131,17 @@ echo "=== Re-signing ${BUNDLE_BIN} (resealing Resources) ==="
 codesign --force --sign - --entitlements "$ENTITLEMENTS" "$BUNDLE_BIN"
 echo "  resealed OK"
 
+if [[ -e "$FINAL_BUNDLE" ]]; then
+  rm -rf -- "$FINAL_BUNDLE"
+fi
+mv "$BUNDLE" "$FINAL_BUNDLE"
+trap - ERR
+echo "  published → ${FINAL_BUNDLE}"
+
 echo ""
 echo "=== Build complete ==="
 echo "  binary : ${BINARY}"
-echo "  bundle : ${BUNDLE}"
+echo "  bundle : ${FINAL_BUNDLE}"
 [[ "$BUILD_VPHONED" -eq 1 ]] && echo "  vphoned: .build/vphoned.signed"
 echo ""
 echo "Run: ${BINARY} --help"
