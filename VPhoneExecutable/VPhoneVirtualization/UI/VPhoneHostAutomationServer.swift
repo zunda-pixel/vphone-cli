@@ -19,6 +19,9 @@ import ImageIO
 ///   {"t":"key","name":"home"}                   → hardware key (home/power/volup/voldown)
 ///   {"t":"type","text":"Hello"}                 → set guest clipboard
 ///   {"t":"ping"}                                → vphoned request/response
+///   {"t":"app_list"}                             → list guest applications
+///   {"t":"app_launch","bundle_id":"com.apple.Preferences"} → launch guest app
+///   {"t":"ui_tree","max_elements":1000}        → read guest accessibility tree
 ///
 /// All commands except "screenshot" wait briefly then capture a compact screen
 /// image returned as `"image":"<base64>"` in the response.  Pass `"screen":false`
@@ -39,6 +42,7 @@ class VPhoneHostAutomationServer {
         var error: String?
         var ok = false
         var imageBase64: String?
+        var payload: [String: Any] = [:]
     }
 
     /// Screen pixel dimensions for coordinate mapping.
@@ -404,6 +408,74 @@ class VPhoneHostAutomationServer {
             semaphore.wait()
             writeResponse(fd, ok: result.ok, error: result.error, image: result.imageBase64)
 
+        case "app_list":
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let ctl = controller?.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                do {
+                    result.payload = try await ctl.appList()
+                    result.ok = true
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+            semaphore.wait()
+            writeResponse(fd, ok: result.ok, error: result.error, payload: result.payload)
+
+        case "app_launch":
+            guard let bundleID = json["bundle_id"] as? String, !bundleID.isEmpty else {
+                writeResponse(fd, ok: false, error: "app_launch requires bundle_id")
+                return
+            }
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let ctl = controller?.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                do {
+                    result.payload = try await ctl.appLaunch(bundleID: bundleID)
+                    result.ok = true
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+            semaphore.wait()
+            writeResponse(fd, ok: result.ok, error: result.error, payload: result.payload)
+
+        case "ui_tree":
+            let maxElements = json["max_elements"] as? Int ?? 1000
+            let visibleOnly = json["visible_only"] as? Bool ?? false
+            let clickableOnly = json["clickable_only"] as? Bool ?? false
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let ctl = controller?.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                do {
+                    result.payload = try await ctl.call("ui.tree", params: [
+                        "max_elements": maxElements,
+                        "visible_only": visibleOnly,
+                        "clickable_only": clickableOnly,
+                    ])
+                    result.ok = true
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+            semaphore.wait()
+            writeResponse(fd, ok: result.ok, error: result.error, payload: result.payload)
+
         default:
             writeResponse(fd, ok: false, error: "unknown command: \(type)")
         }
@@ -436,6 +508,7 @@ class VPhoneHostAutomationServer {
         path: String? = nil,
         error: String? = nil,
         image: String? = nil,
+        payload: [String: Any]? = nil,
     ) {
         var dict: [String: Any] = ["ok": ok]
         if let path {
@@ -446,6 +519,9 @@ class VPhoneHostAutomationServer {
         }
         if let image {
             dict["image"] = image
+        }
+        if let payload {
+            dict.merge(payload) { _, new in new }
         }
 
         guard let data = try? JSONSerialization.data(withJSONObject: dict),
