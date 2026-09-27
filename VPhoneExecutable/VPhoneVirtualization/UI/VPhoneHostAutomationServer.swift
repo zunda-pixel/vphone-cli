@@ -25,6 +25,7 @@ import ImageIO
 ///   {"t":"app_foreground"}                       → inspect guest foreground app
 ///   {"t":"open_url","url":"App-Prefs:root=General"} → open guest URL
 ///   {"t":"ui_tree","max_elements":1000}        → read guest accessibility tree
+///   {"t":"ui_describe"}                           → screen, OCR, and AX summary
 ///
 /// All commands except "screenshot" wait briefly then capture a compact screen
 /// image returned as `"image":"<base64>"` in the response.  Pass `"screen":false`
@@ -510,6 +511,25 @@ class VPhoneHostAutomationServer {
                 }
                 do {
                     result.payload = try await ctl.appOpenURL(url, bundleID: json["bundle_id"] as? String ?? "")
+                    result.ok = true
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+            semaphore.wait()
+            writeResponse(fd, ok: result.ok, error: result.error, payload: result.payload)
+
+        case "ui_describe":
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let ctl = controller?.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                do {
+                    result.payload = try await ctl.call("ui.describe")
                     result.ok = true
                 } catch {
                     result.error = "\(error)"
