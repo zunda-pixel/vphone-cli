@@ -21,6 +21,8 @@ import ImageIO
 ///   {"t":"ping"}                                → vphoned request/response
 ///   {"t":"app_list"}                             → list guest applications
 ///   {"t":"app_launch","bundle_id":"com.apple.Preferences"} → launch guest app
+///   {"t":"app_terminate","bundle_id":"com.apple.Preferences"} → terminate guest app
+///   {"t":"app_foreground"}                       → inspect guest foreground app
 ///   {"t":"ui_tree","max_elements":1000}        → read guest accessibility tree
 ///
 /// All commands except "screenshot" wait briefly then capture a compact screen
@@ -442,6 +444,48 @@ class VPhoneHostAutomationServer {
                 }
                 do {
                     result.payload = try await ctl.appLaunch(bundleID: bundleID)
+                    result.ok = true
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+            semaphore.wait()
+            writeResponse(fd, ok: result.ok, error: result.error, payload: result.payload)
+
+        case "app_terminate":
+            guard let bundleID = json["bundle_id"] as? String, !bundleID.isEmpty else {
+                writeResponse(fd, ok: false, error: "app_terminate requires bundle_id")
+                return
+            }
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let ctl = controller?.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                do {
+                    result.payload = try await ctl.appTerminate(bundleID: bundleID)
+                    result.ok = true
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+            semaphore.wait()
+            writeResponse(fd, ok: result.ok, error: result.error, payload: result.payload)
+
+        case "app_foreground":
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let ctl = controller?.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                do {
+                    result.payload = try await ctl.call("apps.foreground")
                     result.ok = true
                 } catch {
                     result.error = "\(error)"
