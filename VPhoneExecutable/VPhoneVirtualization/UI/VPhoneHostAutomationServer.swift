@@ -23,6 +23,7 @@ import ImageIO
 ///   {"t":"app_launch","bundle_id":"com.apple.Preferences"} → launch guest app
 ///   {"t":"app_terminate","bundle_id":"com.apple.Preferences"} → terminate guest app
 ///   {"t":"app_foreground"}                       → inspect guest foreground app
+///   {"t":"open_url","url":"App-Prefs:root=General"} → open guest URL
 ///   {"t":"ui_tree","max_elements":1000}        → read guest accessibility tree
 ///
 /// All commands except "screenshot" wait briefly then capture a compact screen
@@ -486,6 +487,29 @@ class VPhoneHostAutomationServer {
                 }
                 do {
                     result.payload = try await ctl.call("apps.foreground")
+                    result.ok = true
+                } catch {
+                    result.error = "\(error)"
+                }
+            }
+            semaphore.wait()
+            writeResponse(fd, ok: result.ok, error: result.error, payload: result.payload)
+
+        case "open_url":
+            guard let url = json["url"] as? String, !url.isEmpty else {
+                writeResponse(fd, ok: false, error: "open_url requires url")
+                return
+            }
+            let semaphore = DispatchSemaphore(value: 0)
+            let result = ResultBox()
+            Task { @MainActor in
+                defer { semaphore.signal() }
+                guard let ctl = controller?.control, ctl.isConnected else {
+                    result.error = "guest not connected"
+                    return
+                }
+                do {
+                    result.payload = try await ctl.appOpenURL(url, bundleID: json["bundle_id"] as? String ?? "")
                     result.ok = true
                 } catch {
                     result.error = "\(error)"
