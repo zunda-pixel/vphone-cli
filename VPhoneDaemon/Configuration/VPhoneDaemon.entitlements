@@ -91,6 +91,8 @@
 	<true/>
 	<key>com.apple.private.hid.manager.client</key>
 	<true/>
+	<key>com.apple.accessibility.api</key>
+	<true/>
 	<key>com.apple.private.kernel.jetsam</key>
 	<true/>
 	<key>com.apple.private.installcoordinationd.daemon</key>
